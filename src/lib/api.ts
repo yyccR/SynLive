@@ -1,7 +1,7 @@
 // 后端 API 客户端（浏览器端 fetch）。
-// 本地默认 http://localhost:8000；可用 NEXT_PUBLIC_API_BASE_URL 覆盖。
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+// - 本地开发：不设 NEXT_PUBLIC_API_BASE_URL → 默认 http://localhost:8000
+// - 单机反代部署：构建时设 NEXT_PUBLIC_API_BASE_URL="" → 同源相对路径（经 Caddy :8018 转发）
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
 export interface ReadyInfo {
   status: string;

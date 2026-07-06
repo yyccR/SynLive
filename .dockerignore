@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+dist
+.git
+.venv
+tmp
+output
+**/__pycache__
+*.tsbuildinfo
+*.log
+apps/api/.env
+infra/.env
+scripts/.env

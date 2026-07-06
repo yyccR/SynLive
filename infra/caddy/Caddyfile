@@ -1,0 +1,30 @@
+# SynLive 单口反代：浏览器只需访问 :8018
+# /api /health /docs /openapi → 后端 api:8000；其余 → 前端 web:3000
+{
+	auto_https off
+	admin off
+}
+
+:8018 {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /health* {
+		reverse_proxy api:8000
+	}
+	handle /docs* {
+		reverse_proxy api:8000
+	}
+	handle /redoc* {
+		reverse_proxy api:8000
+	}
+	handle /openapi* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

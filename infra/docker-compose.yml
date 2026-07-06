@@ -95,7 +95,11 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-synlive}:${POSTGRES_PASSWORD:-synlive}@postgres:5432/${POSTGRES_DB:-synlive}
       QDRANT_URL: http://qdrant:6333
       MINIO_ENDPOINT: minio:9000
-      LIVETALKING_URL: http://livetalking:8010
+      # 默认指向 compose 内的 livetalking 服务；单机部署时由 infra/.env 覆盖为 host.docker.internal:8010
+      LIVETALKING_URL: ${LIVETALKING_URL:-http://livetalking:8010}
+    # 让 api 容器能访问宿主机上 --network=host 运行的 LiveTalking（Linux）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -103,6 +107,28 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # ===== 前端（Next.js）=====
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  # ===== 单口反代（Caddy :8018）=====
+  # 浏览器只访问 http://<主机>:8018；/api* /health* 转发后端，其余转发前端
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${ACCESS_PORT:-8018}:8018"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+      - web
 
   # ===== LiveTalking：数字人渲染（需 NVIDIA GPU + CUDA），默认不启动 =====
   # 用 --profile gpu 启动。镜像 tag 为阿里云不透明哈希，部署时取最新：
