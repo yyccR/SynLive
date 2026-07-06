@@ -1,0 +1,16 @@
+# SynLive API 依赖（本阶段最小集：FastAPI + Azure TTS + LiveTalking 客户端）
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+python-dotenv>=1.0
+httpx>=0.27
+requests>=2.32
+loguru>=0.7
+litellm>=1.80,<2.0
+
+# 后续阶段再补：
+# sqlalchemy>=2.0 / alembic（持久化）
+# redis>=5.0（直播状态/队列）
+# qdrant-client（向量库）
+# minio（对象存储）

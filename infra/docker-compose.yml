@@ -1,0 +1,135 @@
+# SynLive 基础设施编排
+#
+# 默认起：postgres / redis / qdrant / minio / srs / api
+# LiveTalking（数字人渲染）需要 NVIDIA GPU，挂在 `gpu` profile 下，默认不启动：
+#   GPU 机器：  docker compose --profile gpu up -d livetalking
+#
+# 本地 Mac 无 Docker 时先忽略本文件；装好 Docker Desktop 后：
+#   cd infra && cp .env.example .env
+#   docker compose up -d postgres redis qdrant minio srs api
+#   docker compose ps
+
+name: synlive
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-synlive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-synlive}
+      POSTGRES_DB: ${POSTGRES_DB:-synlive}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-synlive}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"   # REST / Dashboard
+      - "6334:6334"                    # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"     # S3 API
+      - "9001:9001"                     # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  srs:
+    image: ossrs/srs:6
+    restart: unless-stopped
+    ports:
+      - "${SRS_RTMP_PORT:-1935}:1935"   # RTMP 推流
+      - "${SRS_HTTP_PORT:-8080}:8080"   # HTTP-FLV / HLS
+      - "1985:1985"                      # HTTP API
+      - "8000:8000/udp"                  # WebRTC
+    volumes:
+      - ./srs/conf/srs.conf:/usr/local/srs/conf/srs.conf
+    command: ["./objs/srs", "-c", "conf/srs.conf"]
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../apps/api/.env
+    environment:
+      # 覆盖为 docker 内网服务名
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-synlive}:${POSTGRES_PASSWORD:-synlive}@postgres:5432/${POSTGRES_DB:-synlive}
+      QDRANT_URL: http://qdrant:6333
+      MINIO_ENDPOINT: minio:9000
+      LIVETALKING_URL: http://livetalking:8010
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===== LiveTalking：数字人渲染（需 NVIDIA GPU + CUDA），默认不启动 =====
+  # 用 --profile gpu 启动。镜像 tag 为阿里云不透明哈希，部署时取最新：
+  #   见 infra/livetalking/README.md
+  livetalking:
+    image: registry.cn-beijing.aliyuncs.com/codewithgpu2/lipku-metahuman-stream:${LIVETALKING_IMAGE_TAG:-latest}
+    profiles: ["gpu"]
+    network_mode: host
+    environment:
+      # 与本后端共用同一把 Azure Key，用 LiveTalking 自带 azuretts 插件
+      AZURE_SPEECH_KEY: ${AZURE_SERVICE_KEY:-}
+      AZURE_TTS_REGION: ${AZURE_SERVICE_REGION:-eastasia}
+    volumes:
+      - livetalking_models:/livetalking/checkpoints
+      - livetalking_data:/livetalking/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  minio_data:
+  livetalking_models:
+  livetalking_data:
