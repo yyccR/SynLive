@@ -70,7 +70,10 @@ services:
       timeout: 5s
       retries: 5
 
+  # ===== SRS 媒体网关：仅视频预览/推流时需要，默认不启动（避免 8080 等端口冲突）=====
+  # 启用：docker compose --profile media up -d srs
   srs:
+    profiles: ["media"]
     image: ${REGISTRY}ossrs/srs:6
     restart: unless-stopped
     ports:
