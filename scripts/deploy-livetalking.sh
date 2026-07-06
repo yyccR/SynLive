@@ -3,19 +3,14 @@
 # 在 GPU 机器上一键部署 LiveTalking（数字人渲染节点）。
 # 前置：NVIDIA GPU + CUDA、docker、nvidia-container-toolkit（--gpus 可用）。
 #
-# 它会：
-#   1) 拉取 LiveTalking 预构建镜像
-#   2) 用 LiveTalking 自带 azuretts 插件（与本后端共用同一把 Azure Key）
-#   3) 渲染画面推流 RTMP 到 SynLive 的 SRS（可选，见 SRS_HOST）
-#   4) 暴露 HTTP :8010 供 SynLive 后��调用 /human
+# 用 codewithgpu 预构建镜像（自带代码与模型，位于 /root/metahuman-stream）：
+#   - 用 LiveTalking 自带 azuretts 插件（与本后端共用同一把 Azure Key）
+#   - 渲染画面可推流 RTMP 到 SynLive 的 SRS（可选，见 SRS_HOST）
+#   - 暴露 HTTP :8010 供 SynLive 后端调用 /human
 #
-# 用法示例：
-#   1) 在脚本同目录新建 .env 填 AZURE_SPEECH_KEY=... 等，然后直接 ./deploy-livetalking.sh
-#   2) 或命令行临时传：AZURE_SPEECH_KEY=xxxx SRS_HOST=1.2.3.4 ./deploy-livetalking.sh
-#
-# 跨机接入：部署起来后，在 SynLive 后端的 .env 设
-#   LIVETALKING_URL=http://<本机IP>:8010
-# 浏览器看画面：http://<SynLive主机>:8080/live/avatar.flv （经 SRS 中转）
+# 用法：
+#   1) 在根目录 .env 填 AZURE_SPEECH_KEY 等（与 deploy-full.sh 同一个文件）
+#   2) ./deploy-livetalking.sh
 # ============================================================================
 set -euo pipefail
 
@@ -38,15 +33,14 @@ MODEL="${MODEL:-musetalk}"                                   # ernerf / musetalk
 TTS="${TTS:-azuretts}"                                       # 用自带 Azure 插件
 AZURE_KEY="${AZURE_SPEECH_KEY:-${AZURE_SERVICE_KEY:-}}"
 AZURE_REGION="${AZURE_TTS_REGION:-${AZURE_SERVICE_REGION:-eastasia}}"
-IMAGE_TAG="${LIVETALKING_IMAGE_TAG:-latest}"
+# 镜像 tag 是不透明 commit hash（无 latest），随版本变；取官方文档当前值
+IMAGE_TAG="${LIVETALKING_IMAGE_TAG:-vjo1Y6NJ3N}"
 IMAGE="${LIVETALKING_IMAGE:-registry.cn-beijing.aliyuncs.com/codewithgpu2/lipku-metahuman-stream:${IMAGE_TAG}}"
 SRS_HOST="${SRS_HOST:-}"                                      # 填了就推流到 rtmp://SRS_HOST:1935/live/avatar
-MODELS_DIR="${MODELS_DIR:-$PWD/livetalking-models}"
-DATA_DIR="${DATA_DIR:-$PWD/livetalking-data}"
 CONTAINER="${CONTAINER:-livetalking}"
 
 echo "$(c_dim '== 前置检查 ==')"
-[ -n "$AZURE_KEY" ] || { echo "$(c_red '请提供 AZURE_SPEECH_KEY（或 AZURE_SERVICE_KEY）')"; exit 1; }
+[ -n "$AZURE_KEY" ] || { echo "$(c_red '请提供 AZURE_SPEECH_KEY（或 AZURE_SERVICE_KEY），写到根目录 .env')"; exit 1; }
 command -v docker >/dev/null || { echo "$(c_red '未安装 docker')"; exit 1; }
 
 # GPU 检查：优先用 REGISTRY 前缀的 busybox 探测（避免 Docker Hub 拉取失败误报）；
@@ -66,40 +60,58 @@ if [ "$gpu_ok" != 1 ]; then
 fi
 echo "$(c_grn 'GPU 可用 ✔')"
 
-echo "$(c_dim '== 准备目录 ==')"
-mkdir -p "$MODELS_DIR" "$DATA_DIR"
-
 echo "$(c_dim '== 拉取镜像（首次较大，请耐心）==')"
-docker pull "$IMAGE"
-
-# ---- 启动命令 ----
-# 注意：不同 LiveTalking 版本，app.py 的参数/路径可能略有差异。
-# 若镜像 entrypoint 已是启动命令，改用 LIVETALKING_CMD 覆盖；或改 config.yaml。
-CMD="${LIVETALKING_CMD:-python app.py --model ${MODEL} --tts ${TTS}}"
-if [ -n "$SRS_HOST" ]; then
-  # 推流到 SynLive 的 SRS，浏览器经 SRS 低延迟观看，无需开 UDP/WebRTC 给浏览器
-  CMD="$CMD --publish_url rtmp://${SRS_HOST}:1935/live/avatar"
+if ! docker pull "$IMAGE"; then
+  echo "$(c_red "拉取失败：$IMAGE")"
+  echo "$(c_yel '  LiveTalking 镜像 tag 是不透明 commit hash，会随版本变。')"
+  echo "$(c_yel '  打开 https://livetalking-doc.readthedocs.io/en/latest/docker.html')"
+  echo "$(c_yel '  复制 docker run 里 lipku-metahuman-stream:<tag> 的最新 tag，')"
+  echo "$(c_yel "  在根目录 .env 设 LIVETALKING_IMAGE_TAG=<新tag> 后重跑本脚本。")"
+  exit 1
 fi
 
+# ---- 启动命令 ----
+# 镜像里代码在 /root/metahuman-stream，自带模型；进目录 git pull 更新后跑 app.py。
+# 想完全自定义命令，在 .env 设 LIVETALKING_CMD="..."。
 echo "$(c_dim '== 启动 LiveTalking ==')"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-eval "docker run -d --name ${CONTAINER} --gpus all --network=host \
-  --restart unless-stopped \
-  -e AZURE_SPEECH_KEY='${AZURE_KEY}' \
-  -e AZURE_TTS_REGION='${AZURE_REGION}' \
-  -v '${MODELS_DIR}':/livetalking/checkpoints \
-  -v '${DATA_DIR}':/livetalking/data \
-  '${IMAGE}' ${CMD}"
+
+PUBLISH=""
+[ -n "$SRS_HOST" ] && PUBLISH="--publish_url rtmp://${SRS_HOST}:1935/live/avatar"
+
+# 自定义模型/形象目录（可选）：设了才挂载，避免遮住镜像自带内容
+EXTRA_VOLUMES=()
+[ -n "${LIVETALKING_MODELS_DIR:-}" ] && EXTRA_VOLUMES+=(-v "${LIVETALKING_MODELS_DIR}:/root/metahuman-stream/checkpoints")
+[ -n "${LIVETALKING_DATA_DIR:-}" ]   && EXTRA_VOLUMES+=(-v "${LIVETALKING_DATA_DIR}:/root/metahuman-stream/data")
+
+if [ -n "${LIVETALKING_CMD:-}" ]; then
+  # shellcheck disable=SC2086
+  set -- ${LIVETALKING_CMD}
+  docker run -d --name "$CONTAINER" --gpus all --network=host \
+    --restart unless-stopped \
+    -e AZURE_SPEECH_KEY="$AZURE_KEY" \
+    -e AZURE_TTS_REGION="$AZURE_REGION" \
+    "${EXTRA_VOLUMES[@]}" \
+    "$IMAGE" "$@"
+else
+  docker run -d --name "$CONTAINER" --gpus all --network=host \
+    --restart unless-stopped \
+    -e AZURE_SPEECH_KEY="$AZURE_KEY" \
+    -e AZURE_TTS_REGION="$AZURE_REGION" \
+    "${EXTRA_VOLUMES[@]}" \
+    "$IMAGE" \
+    bash -c "cd /root/metahuman-stream && (git pull || true) && python app.py --model ${MODEL} --tts ${TTS} ${PUBLISH}"
+fi
 
 sleep 3
 echo
-echo "$(c_grn '== 部署完成 ==')"
+echo "$(c_grn '== 容器已启动，看日志确认服务起来 ==')"
 echo "  本机 LiveTalking HTTP : http://<本机IP>:8010"
 echo "  日志                   : docker logs -f ${CONTAINER}"
 echo
-echo "$(c_yel '在 SynLive 后端 .env 设置（跨机接入）：')"
+echo "$(c_yel '在 SynLive 后端（同一台或另一台）的 .env 设置（跨机接入）：')"
 echo "  LIVETALKING_URL=http://<本机IP>:8010"
 [ -n "$SRS_HOST" ] && echo "$(c_yel '浏览器观看（经 SRS）：http://<SynLive主机>:8080/live/avatar.flv')"
 echo
-echo "$(c_dim '提示：app.py 参数 / --publish_url / 镜像 tag 随版本可能变化，')"
-echo "$(c_dim '      若启动失败，查 docker logs 后按当时官方文档微调 LIVETALKING_CMD。')"
+echo "$(c_dim '提示：app.py 参数 / 镜像 tag 随版本可能变化；若启动失败，')"
+echo "$(c_dim '      看 docker logs 后按当时官方文档用 LIVETALKING_CMD / LIVETALKING_IMAGE_TAG 覆盖。')"
