@@ -1,5 +1,7 @@
 # SynLive API 镜像
-FROM python:3.12-slim
+# REGISTRY 可指向私有仓库（带尾斜杠）���如 harbor-develop.zuzuche.net/dockerhub/
+ARG REGISTRY=
+FROM ${REGISTRY}python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

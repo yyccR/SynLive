@@ -13,7 +13,7 @@ name: synlive
 
 services:
   postgres:
-    image: postgres:16
+    image: ${REGISTRY}postgres:16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-synlive}
@@ -30,7 +30,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    image: ${REGISTRY}redis:7
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
@@ -44,7 +44,7 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: ${REGISTRY}qdrant/qdrant:latest
     restart: unless-stopped
     ports:
       - "${QDRANT_PORT:-6333}:6333"   # REST / Dashboard
@@ -53,7 +53,7 @@ services:
       - qdrant_data:/qdrant/storage
 
   minio:
-    image: minio/minio:latest
+    image: ${REGISTRY}minio/minio:latest
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -71,7 +71,7 @@ services:
       retries: 5
 
   srs:
-    image: ossrs/srs:6
+    image: ${REGISTRY}ossrs/srs:6
     restart: unless-stopped
     ports:
       - "${SRS_RTMP_PORT:-1935}:1935"   # RTMP 推流
@@ -86,6 +86,8 @@ services:
     build:
       context: ../apps/api
       dockerfile: Dockerfile
+      args:
+        REGISTRY: ${REGISTRY}
     restart: unless-stopped
     env_file:
       - ../apps/api/.env
@@ -113,6 +115,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile.web
+      args:
+        REGISTRY: ${REGISTRY}
     restart: unless-stopped
     depends_on:
       - api
@@ -120,7 +124,7 @@ services:
   # ===== 单口反代（Caddy :8018）=====
   # 浏览器只访问 http://<主机>:8018；/api* /health* 转发后端，其余转发前端
   proxy:
-    image: caddy:2-alpine
+    image: ${REGISTRY}caddy:2-alpine
     restart: unless-stopped
     ports:
       - "${ACCESS_PORT:-8018}:8018"
