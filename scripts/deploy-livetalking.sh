@@ -10,14 +10,23 @@
 #   4) 暴露 HTTP :8010 供 SynLive 后��调用 /human
 #
 # 用法示例：
-#   AZURE_SPEECH_KEY=xxxx SRS_HOST=1.2.3.4 ./deploy-livetalking.sh
-#   MODEL=musetalk AZURE_SPEECH_KEY=xxxx ./deploy-livetalking.sh
+#   1) 在脚本同目录新建 .env 填 AZURE_SPEECH_KEY=... 等，然后直接 ./deploy-livetalking.sh
+#   2) 或命令行临时传：AZURE_SPEECH_KEY=xxxx SRS_HOST=1.2.3.4 ./deploy-livetalking.sh
 #
 # 跨机接入：部署起来后，在 SynLive 后端的 .env 设
 #   LIVETALKING_URL=http://<本机IP>:8010
 # 浏览器看画面：http://<SynLive主机>:8080/live/avatar.flv （经 SRS 中转）
 # ============================================================================
 set -euo pipefail
+
+# 自动加载脚本同目录的 .env（把 AZURE_SPEECH_KEY 等填进去即可）
+ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
 
 c_red() { printf '\033[31m%s\033[0m' "$1"; }
 c_grn() { printf '\033[32m%s\033[0m' "$1"; }
