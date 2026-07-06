@@ -20,7 +20,8 @@ app/
 
 ```bash
 cd apps/api
-cp .env.example .env          # 填入 AZURE_SERVICE_KEY / AZURE_SERVICE_REGION
+# 配置统一在项目根目录 .env（见根 .env.example）；本地 uvicorn 开发可复制一份到本目录：
+cp ../../.env.example .env     # 填入 AZURE_SERVICE_KEY / LITELLM_LLM_API_KEY
 # 用项目根目录已有的 .venv（Python 3.13）
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
@@ -53,9 +54,9 @@ uvicorn app.main:app --reload --port 8000
 2. 调用 LiveTalking `POST /human {sessionid, text, type:"echo"}` 驱动渲染。
 3. LiveTalking 不可达（本机无 GPU / 未启动）→ 返回 `livetalking.degraded=true`，**不抛异常、不阻塞 TTS 验证**。
 
-## 配置（.env）
+## 配置
 
-见 `.env.example`。关键项：
+**docker 部署**统一读项目根目录 `.env`（见根 `.env.example`），api 容器通过 compose 的 `env_file` 自动注入。关键项：
 
 - `AZURE_SERVICE_KEY` / `AZURE_SERVICE_REGION`：Azure 语音凭据。
 - `LIVETALKING_URL`：docker 内网 `http://livetalking:8010`；本地原生跑改 `http://localhost:8010`。

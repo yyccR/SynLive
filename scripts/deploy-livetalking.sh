@@ -19,8 +19,8 @@
 # ============================================================================
 set -euo pipefail
 
-# 自动加载脚本同目录的 .env（把 AZURE_SPEECH_KEY 等填进去即可）
-ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
+# 自动加载【根目录 .env】（与部署脚本共用同一份配置）
+ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env"
 if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090

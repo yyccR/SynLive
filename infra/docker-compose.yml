@@ -93,7 +93,7 @@ services:
         REGISTRY: ${REGISTRY}
     restart: unless-stopped
     env_file:
-      - ../apps/api/.env
+      - ../.env
     environment:
       # 覆盖为 docker 内网服务名
       REDIS_URL: redis://redis:6379/0
