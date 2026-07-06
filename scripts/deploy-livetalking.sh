@@ -48,9 +48,20 @@ CONTAINER="${CONTAINER:-livetalking}"
 echo "$(c_dim '== 前置检查 ==')"
 [ -n "$AZURE_KEY" ] || { echo "$(c_red '请提供 AZURE_SPEECH_KEY（或 AZURE_SERVICE_KEY）')"; exit 1; }
 command -v docker >/dev/null || { echo "$(c_red '未安装 docker')"; exit 1; }
-if ! docker run --rm --gpus all busybox true >/dev/null 2>&1; then
-  echo "$(c_red 'GPU 或 nvidia-container-toolkit 不可用（--gpus all 失败）')"
-  echo "$(c_yel '  安装：https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html')"
+
+# GPU 检查：优先用 REGISTRY 前缀的 busybox 探测（避免 Docker Hub 拉取失败误报）；
+# 探测镜像拉不到时，退而检查 docker 是否已注册 nvidia runtime。两者皆无才报错。
+gpu_ok=0
+if docker run --rm --gpus all "${REGISTRY}busybox" true >/dev/null 2>&1; then
+  gpu_ok=1
+elif docker info --format '{{.Runtimes}}' 2>/dev/null | grep -q nvidia; then
+  echo "$(c_yel '  提示：busybox 探测镜像未拉到，但检测到 nvidia runtime，视为 GPU 可用，继续。')"
+  gpu_ok=1
+fi
+if [ "$gpu_ok" != 1 ]; then
+  echo "$(c_red 'docker 无法使用 GPU（--gpus all 失败）')"
+  echo "$(c_yel '  多半没装 nvidia-container-toolkit：')"
+  echo "$(c_yel '  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html')"
   exit 1
 fi
 echo "$(c_grn 'GPU 可用 ✔')"
