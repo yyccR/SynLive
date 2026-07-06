@@ -1,16 +1,23 @@
 # SynLive 前端（Next.js）
 # 单机部署：前端通过 Caddy 反代访问后端，NEXT_PUBLIC_API_BASE_URL 留空 → 同源相对路径
 # 用 corepack 启用 pnpm（对齐 package.json 的 packageManager），避免 next build 找不到 pnpm。
-# REGISTRY 可指向私有仓库（带尾斜杠），如 harbor-develop.zuzuche.net/dockerhub/
+# REGISTRY：私有镜像仓库前缀（带尾斜杠），如 harbor-develop.zuzuche.net/dockerhub/
+# NPM_REGISTRY：npm/corepack 源，国内默认 npmmirror；可由 .env 覆盖。
 ARG REGISTRY=
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 FROM ${REGISTRY}node:22-alpine AS deps
+ARG NPM_REGISTRY
 WORKDIR /app
+ENV COREPACK_NPM_REGISTRY=$NPM_REGISTRY npm_config_registry=$NPM_REGISTRY
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --no-frozen-lockfile
 
 FROM ${REGISTRY}node:22-alpine AS builder
+ARG NPM_REGISTRY
 WORKDIR /app
+ENV COREPACK_NPM_REGISTRY=$NPM_REGISTRY npm_config_registry=$NPM_REGISTRY
 RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

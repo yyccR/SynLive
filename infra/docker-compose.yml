@@ -120,6 +120,7 @@ services:
       dockerfile: Dockerfile.web
       args:
         REGISTRY: ${REGISTRY}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     restart: unless-stopped
     depends_on:
       - api
