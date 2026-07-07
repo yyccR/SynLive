@@ -100,7 +100,7 @@ else
     -e AZURE_TTS_REGION="$AZURE_REGION" \
     "${EXTRA_VOLUMES[@]}" \
     "$IMAGE" \
-    bash -c "cd /root/metahuman-stream && (git pull || true) && python app.py --model ${MODEL} --tts ${TTS} ${PUBLISH}"
+    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && (git pull || true) && python app.py --model ${MODEL} --tts ${TTS} ${PUBLISH}"
 fi
 
 sleep 3
