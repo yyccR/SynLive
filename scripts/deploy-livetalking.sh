@@ -31,6 +31,7 @@ c_dim() { printf '\033[2m%s\033[0m' "$1"; }
 # ---- 可配置参数（环境变量覆盖）----
 MODEL="${MODEL:-musetalk}"                                   # ernerf / musetalk / wav2lip
 TTS="${TTS:-azuretts}"                                       # 用自带 Azure 插件
+TRANSPORT="${TRANSPORT:-webrtc}"                             # webrtc(浏览器直连)/rtcpush(推 SRS)/virtualcam
 AZURE_KEY="${AZURE_SPEECH_KEY:-${AZURE_SERVICE_KEY:-}}"
 AZURE_REGION="${AZURE_TTS_REGION:-${AZURE_SERVICE_REGION:-eastasia}}"
 # 镜像 tag 是不透明 commit hash（无 latest），随版本变；取官方文档当前值
@@ -100,7 +101,7 @@ else
     -e AZURE_TTS_REGION="$AZURE_REGION" \
     "${EXTRA_VOLUMES[@]}" \
     "$IMAGE" \
-    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && (git pull || true) && python app.py --model ${MODEL} --tts ${TTS} ${PUBLISH}"
+    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && python app.py --model ${MODEL} --tts ${TTS} --transport ${TRANSPORT} ${PUBLISH}"
 fi
 
 sleep 3
