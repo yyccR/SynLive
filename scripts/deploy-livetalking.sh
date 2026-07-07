@@ -38,9 +38,11 @@ AZURE_REGION="${AZURE_TTS_REGION:-${AZURE_SERVICE_REGION:-eastasia}}"
 IMAGE_TAG="${LIVETALKING_IMAGE_TAG:-vjo1Y6NJ3N}"
 IMAGE="${LIVETALKING_IMAGE:-registry.cn-beijing.aliyuncs.com/codewithgpu2/lipku-metahuman-stream:${IMAGE_TAG}}"
 SRS_HOST="${SRS_HOST:-}"                                      # 填了就推流到 rtmp://SRS_HOST:1935/live/avatar
-# 对外端口：容器内 LiveTalking HTTP 固定 8000，这里映射到宿主机的对外端口（默认 8028，避开 SynLive 的 8000）
+# 端口：LiveTalking 有两个服务
+#   LT_PORT   = aiohttp：网页 + /offer(WebRTC 视频) + /human(控制) + CORS —— 浏览器和 SynLive 都用这个（默认 8028）
+#   LT_WS_PORT= gevent WSGI：老的 /humanecho WebSocket，没用，挪开避免和 SynLive 的 8000 冲突（默认 8029）
 LT_PORT="${LIVETALKING_PORT:-8028}"
-LT_WS_PORT="${LIVETALKING_WS_PORT:-8010}"
+LT_WS_PORT="${LIVETALKING_WS_PORT:-8029}"
 CONTAINER="${CONTAINER:-livetalking}"
 
 echo "$(c_dim '== 前置检查 ==')"
@@ -104,22 +106,31 @@ else
     -e AZURE_TTS_REGION="$AZURE_REGION" \
     "${EXTRA_VOLUMES[@]}" \
     "$IMAGE" \
-    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && sed -i 's/, 8000), app/, ${LT_PORT}), app/' app.py && python app.py --model ${MODEL} --tts ${TTS}"
+    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && sed -i 's/, 8000), app/, ${LT_WS_PORT}), app/' app.py && python app.py --model ${MODEL} --tts ${TTS} --listenport ${LT_PORT}"
 fi
 
 sleep 3
+
+# 注入 WebRTC 播放页到容器 web/（aiohttp 静态服务，与 /offer 同源，免 CORS）
+VIEWER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lt-viewer.html"
+if [ -f "$VIEWER" ]; then
+  docker cp "$VIEWER" "$CONTAINER:/root/metahuman-stream/web/lt-viewer.html" >/dev/null 2>&1 \
+    && echo "$(c_dim '  已注入播放页 lt-viewer.html（浏览器开 http://<IP>:')${LT_PORT}$(c_dim '/lt-viewer.html）')"
+fi
+
 echo
-echo "$(c_grn '== 容器已启动，看日志确认服务起来 ==')"
-echo "  ⭐ 网页/数字人画面/WebRTC/SynLive 控制 都在 TCP 8010（aiohttp：/offer、/human、静态页 web/，带 CORS）"
-echo "     ${LT_PORT} 只是老的 WebSocket 端口，看画面用不到。"
-echo "  本机访问 : http://localhost:8010/webrtcapi.html"
-echo "  日志     : docker logs -f ${CONTAINER}"
+echo "$(c_grn '== 容器已启动（端口对应：SynLive=8018，LiveTalking=8028）==')"
+echo "  ⭐ 数字人画面/网页/WebRTC/SynLive 控制 都在 TCP ${LT_PORT}（aiohttp：/offer、/human、静态页 web/，带 CORS）"
+echo "     ${LT_WS_PORT} 是老的 WS 端口，避让用，不用管。"
+echo "  浏览器看数字人 : http://<本机IP>:${LT_PORT}/lt-viewer.html"
+echo "  本机自测      : http://localhost:${LT_PORT}/lt-viewer.html"
+echo "  日志          : docker logs -f ${CONTAINER}"
 echo
 echo "$(c_yel '平台要开放的端口（WebRTC 看画面）:')"
-echo "  TCP 8010（网页+信令+控制）、以及一段 UDP（WebRTC 媒体，如 30000-65535）"
+echo "  TCP ${LT_PORT}（网页+信令+控制）、以及一段 UDP（WebRTC 媒体，如 30000-65535）"
 echo
 echo "$(c_yel 'SynLive 后端 .env（host 网络，同机）：')"
-echo "  LIVETALKING_URL=http://host.docker.internal:8010"
+echo "  LIVETALKING_URL=http://host.docker.internal:${LT_PORT}"
 [ -n "$SRS_HOST" ] && echo "$(c_yel '浏览器观看（经 SRS）：http://<SynLive主机>:8080/live/avatar.flv')"
 echo
 echo "$(c_dim '提示：app.py 参数 / 镜像 tag 随版本可能变化；若启动失败，')"
