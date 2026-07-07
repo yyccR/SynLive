@@ -91,31 +91,33 @@ EXTRA_VOLUMES=()
 if [ -n "${LIVETALKING_CMD:-}" ]; then
   # shellcheck disable=SC2086
   set -- ${LIVETALKING_CMD}
-  docker run -d --name "$CONTAINER" --gpus all \
-    -p ${LT_PORT}:8000 -p ${LT_WS_PORT}:8010 \
+  docker run -d --name "$CONTAINER" --gpus all --network=host \
     --restart unless-stopped \
     -e AZURE_SPEECH_KEY="$AZURE_KEY" \
     -e AZURE_TTS_REGION="$AZURE_REGION" \
     "${EXTRA_VOLUMES[@]}" \
     "$IMAGE" "$@"
 else
-  docker run -d --name "$CONTAINER" --gpus all \
-    -p ${LT_PORT}:8000 -p ${LT_WS_PORT}:8010 \
+  docker run -d --name "$CONTAINER" --gpus all --network=host \
     --restart unless-stopped \
     -e AZURE_SPEECH_KEY="$AZURE_KEY" \
     -e AZURE_TTS_REGION="$AZURE_REGION" \
     "${EXTRA_VOLUMES[@]}" \
     "$IMAGE" \
-    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && python app.py --model ${MODEL} --tts ${TTS} --transport ${TRANSPORT} ${PUBLISH}"
+    bash -c "source /root/miniconda3/etc/profile.d/conda.sh 2>/dev/null; conda activate base 2>/dev/null; cd /root/metahuman-stream && sed -i 's/, 8000), app/, ${LT_PORT}), app/' app.py && python app.py --model ${MODEL} --tts ${TTS}"
 fi
 
 sleep 3
 echo
 echo "$(c_grn '== 容器已启动，看日志确认服务起来 ==')"
-echo "  本机 LiveTalking HTTP : http://<本机IP>:${LT_PORT}  (容器内 8000 → 对外 ${LT_PORT})"
-echo "  日志                   : docker logs -f ${CONTAINER}"
+echo "  LiveTalking HTTP(改写成 ${LT_PORT}) + RTC(8010) 走 host 网络"
+echo "  本机访问 : http://localhost:${LT_PORT}/"
+echo "  日志     : docker logs -f ${CONTAINER}"
 echo
-echo "$(c_yel '在 SynLive 后端的 .env 设置（同机 bridge 网络）：')"
+echo "$(c_yel '平台要开放的端口（WebRTC 看画面）:')"
+echo "  TCP ${LT_PORT}（页面+信令）、TCP 8010（RTC）、以及一段 UDP（WebRTC 媒体，如 30000-65535）"
+echo
+echo "$(c_yel 'SynLive 后端 .env（host 网络，同机）：')"
 echo "  LIVETALKING_URL=http://host.docker.internal:${LT_PORT}"
 [ -n "$SRS_HOST" ] && echo "$(c_yel '浏览器观看（经 SRS）：http://<SynLive主机>:8080/live/avatar.flv')"
 echo
