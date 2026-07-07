@@ -110,15 +110,16 @@ fi
 sleep 3
 echo
 echo "$(c_grn '== 容器已启动，看日志确认服务起来 ==')"
-echo "  LiveTalking HTTP(改写成 ${LT_PORT}) + RTC(8010) 走 host 网络"
-echo "  本机访问 : http://localhost:${LT_PORT}/"
+echo "  ⭐ 网页/数字人画面/WebRTC/SynLive 控制 都在 TCP 8010（aiohttp：/offer、/human、静态页 web/，带 CORS）"
+echo "     ${LT_PORT} 只是老的 WebSocket 端口，看画面用不到。"
+echo "  本机访问 : http://localhost:8010/webrtcapi.html"
 echo "  日志     : docker logs -f ${CONTAINER}"
 echo
 echo "$(c_yel '平台要开放的端口（WebRTC 看画面）:')"
-echo "  TCP ${LT_PORT}（页面+信令）、TCP 8010（RTC）、以及一段 UDP（WebRTC 媒体，如 30000-65535）"
+echo "  TCP 8010（网页+信令+控制）、以及一段 UDP（WebRTC 媒体，如 30000-65535）"
 echo
 echo "$(c_yel 'SynLive 后端 .env（host 网络，同机）：')"
-echo "  LIVETALKING_URL=http://host.docker.internal:${LT_PORT}"
+echo "  LIVETALKING_URL=http://host.docker.internal:8010"
 [ -n "$SRS_HOST" ] && echo "$(c_yel '浏览器观看（经 SRS）：http://<SynLive主机>:8080/live/avatar.flv')"
 echo
 echo "$(c_dim '提示：app.py 参数 / 镜像 tag 随版本可能变化；若启动失败，')"
