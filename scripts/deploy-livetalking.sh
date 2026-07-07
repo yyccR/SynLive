@@ -38,6 +38,9 @@ AZURE_REGION="${AZURE_TTS_REGION:-${AZURE_SERVICE_REGION:-eastasia}}"
 IMAGE_TAG="${LIVETALKING_IMAGE_TAG:-vjo1Y6NJ3N}"
 IMAGE="${LIVETALKING_IMAGE:-registry.cn-beijing.aliyuncs.com/codewithgpu2/lipku-metahuman-stream:${IMAGE_TAG}}"
 SRS_HOST="${SRS_HOST:-}"                                      # 填了就推流到 rtmp://SRS_HOST:1935/live/avatar
+# 对外端口：容器内 LiveTalking HTTP 固定 8000，这里映射到宿主机的对外端口（默认 8028，避开 SynLive 的 8000）
+LT_PORT="${LIVETALKING_PORT:-8028}"
+LT_WS_PORT="${LIVETALKING_WS_PORT:-8010}"
 CONTAINER="${CONTAINER:-livetalking}"
 
 echo "$(c_dim '== 前置检查 ==')"
@@ -88,14 +91,16 @@ EXTRA_VOLUMES=()
 if [ -n "${LIVETALKING_CMD:-}" ]; then
   # shellcheck disable=SC2086
   set -- ${LIVETALKING_CMD}
-  docker run -d --name "$CONTAINER" --gpus all --network=host \
+  docker run -d --name "$CONTAINER" --gpus all \
+    -p ${LT_PORT}:8000 -p ${LT_WS_PORT}:8010 \
     --restart unless-stopped \
     -e AZURE_SPEECH_KEY="$AZURE_KEY" \
     -e AZURE_TTS_REGION="$AZURE_REGION" \
     "${EXTRA_VOLUMES[@]}" \
     "$IMAGE" "$@"
 else
-  docker run -d --name "$CONTAINER" --gpus all --network=host \
+  docker run -d --name "$CONTAINER" --gpus all \
+    -p ${LT_PORT}:8000 -p ${LT_WS_PORT}:8010 \
     --restart unless-stopped \
     -e AZURE_SPEECH_KEY="$AZURE_KEY" \
     -e AZURE_TTS_REGION="$AZURE_REGION" \
@@ -107,11 +112,11 @@ fi
 sleep 3
 echo
 echo "$(c_grn '== 容器已启动，看日志确认服务起来 ==')"
-echo "  本机 LiveTalking HTTP : http://<本机IP>:8010"
+echo "  本机 LiveTalking HTTP : http://<本机IP>:${LT_PORT}  (容器内 8000 → 对外 ${LT_PORT})"
 echo "  日志                   : docker logs -f ${CONTAINER}"
 echo
-echo "$(c_yel '在 SynLive 后端（同一台或另一台）的 .env 设置（跨机接入）：')"
-echo "  LIVETALKING_URL=http://<本机IP>:8010"
+echo "$(c_yel '在 SynLive 后端的 .env 设置（同机 bridge 网络）：')"
+echo "  LIVETALKING_URL=http://host.docker.internal:${LT_PORT}"
 [ -n "$SRS_HOST" ] && echo "$(c_yel '浏览器观看（经 SRS）：http://<SynLive主机>:8080/live/avatar.flv')"
 echo
 echo "$(c_dim '提示：app.py 参数 / 镜像 tag 随版本可能变化；若启动失败，')"
