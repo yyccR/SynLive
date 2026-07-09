@@ -17,3 +17,7 @@ tmp/
 
 .venv/
 output/
+
+# 本地缓存 / 训练产物，不入库
+.pnpm-store/
+.train-data/

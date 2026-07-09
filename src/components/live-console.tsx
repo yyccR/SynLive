@@ -1,14 +1,23 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Mic, Radio, Send, Sparkles, Volume2 } from 'lucide-react';
-import { api, type AnswerResult, type ReadyInfo, type SessionInfo, type VoiceItem } from '@/lib/api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Loader2, Mic, Radio, Send, Sparkles, Video, Volume2 } from 'lucide-react';
+import {
+  api,
+  LIVETALKING_URL,
+  offerLiveTalking,
+  pingLiveTalking,
+  type AnswerResult,
+  type ReadyInfo,
+  type SessionInfo,
+} from '@/lib/api';
+
+type AvatarState = 'idle' | 'connecting' | 'connected' | 'failed';
 
 interface QaItem {
   question: string;
   answer: string;
   llmMs: number;
-  ttsMs: number | null;
   model: string;
 }
 
@@ -22,24 +31,47 @@ function StatusLight({ label, ok, warn, hint }: { label: string; ok: boolean; wa
   );
 }
 
+// aiortc 不支持 trickle ICE，offer SDP 必须带全候选才能让 LiveTalking 应答后连通。
+// 等 ICE 收集完成，最多等 timeoutMs（无 STUN 时仅 host 候选，通常瞬时完成）。
+function waitIceGather(pc: RTCPeerConnection, timeoutMs = 2500): Promise<void> {
+  return new Promise((resolve) => {
+    if (pc.iceGatheringState === 'complete') return resolve();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      pc.removeEventListener('icegatheringstatechange', check);
+      resolve();
+    };
+    const check = () => {
+      if (pc.iceGatheringState === 'complete') finish();
+    };
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
 export function LiveConsole() {
   const [ready, setReady] = useState<ReadyInfo | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
-  const [voices, setVoices] = useState<VoiceItem[]>([]);
-  const [lang, setLang] = useState('zh');
-  const [voice, setVoice] = useState('zh-CN-XiaoxiaoNeural');
 
-  // 播报（TTS）
+  // 数字人 WebRTC 连接
+  const [avatarState, setAvatarState] = useState<AvatarState>('idle');
+  const [avatarErr, setAvatarErr] = useState('');
+  const [ltReachable, setLtReachable] = useState<boolean | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // 播报（让数字人开口）
   const [broadcastText, setBroadcastText] = useState('欢迎来到直播间，今天为大家介绍我们的新品。');
   const [broadcastBusy, setBroadcastBusy] = useState(false);
-  const [broadcastAudio, setBroadcastAudio] = useState<{ url: string; ms: number } | null>(null);
+  const [broadcastInfo, setBroadcastInfo] = useState('');
   const [broadcastErr, setBroadcastErr] = useState('');
 
-  // 问答（LLM + TTS）
+  // 问答（LLM → 数字人开口）
   const [question, setQuestion] = useState('这款产品支持七天无理由退货吗？');
   const [qaBusy, setQaBusy] = useState(false);
   const [qaResult, setQaResult] = useState<AnswerResult | null>(null);
-  const [qaAudio, setQaAudio] = useState<{ url: string; ms: number } | null>(null);
   const [qaErr, setQaErr] = useState('');
   const [history, setHistory] = useState<QaItem[]>([]);
 
@@ -51,44 +83,71 @@ export function LiveConsole() {
     }
   }, []);
 
-  const loadVoices = useCallback(async (l: string) => {
-    try {
-      const v = await api.voices(l);
-      setVoices(v);
-      if (v.length && !v.find((x) => x.id === voice)) setVoice(v[0].id);
-    } catch {
-      setVoices([]);
-    }
-  }, [voice]);
-
   const ensureSession = useCallback(async () => {
     try {
-      const s = await api.createSession({ title: '前端中控测试', voice, lang });
-      setSession(s);
-    } catch (e) {
+      setSession(await api.createSession({ title: '前端中控测试' }));
+    } catch {
       setSession(null);
     }
-  }, [voice, lang]);
+  }, []);
 
   useEffect(() => {
     loadReady();
-    loadVoices(lang);
     ensureSession();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    pingLiveTalking().then(setLtReachable);
+    return () => {
+      pcRef.current?.close();
+      pcRef.current = null;
+    };
+  }, [loadReady, ensureSession]);
 
-  const onLangChange = (l: string) => {
-    setLang(l);
-    loadVoices(l);
+  const connectAvatar = async () => {
+    if (avatarState === 'connecting' || avatarState === 'connected') return;
+    setAvatarState('connecting');
+    setAvatarErr('');
+    try {
+      pcRef.current?.close();
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+      pc.addTransceiver('video', { direction: 'recvonly' });
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+      pc.ontrack = (e) => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = e.streams[0];
+          // 连接由用户点击触发，已具备播放权限；音频经同一条 WebRTC 流回传
+          videoRef.current.play().catch(() => {});
+        }
+      };
+      pc.oniceconnectionstatechange = () => {
+        const s = pc.iceConnectionState;
+        if (s === 'connected' || s === 'completed') setAvatarState('connected');
+        else if (s === 'failed') setAvatarState('failed');
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitIceGather(pc); // 收集全候选，写进 offer
+      const local = pc.localDescription;
+      if (!local?.sdp) throw new Error('无法生成 WebRTC offer SDP');
+      const ans = await offerLiveTalking(local.sdp, local.type);
+      await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type as RTCSdpType });
+    } catch (e) {
+      setAvatarState('failed');
+      setAvatarErr(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const doBroadcast = async () => {
+    if (!session) return;
     setBroadcastBusy(true);
     setBroadcastErr('');
-    setBroadcastAudio(null);
+    setBroadcastInfo('');
     try {
-      const r = await api.synthesize({ text: broadcastText, lang, voice });
-      setBroadcastAudio({ url: r.url, ms: r.latencyMs });
+      const r = await api.say(session.id, { text: broadcastText });
+      const lt = r.livetalking;
+      setBroadcastInfo(
+        lt.degraded ? `数字人未驱动：${lt.detail}` : `已发送给数字人 · ${lt.latency_ms}ms`,
+      );
     } catch (e) {
       setBroadcastErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -101,24 +160,16 @@ export function LiveConsole() {
     setQaBusy(true);
     setQaErr('');
     setQaResult(null);
-    setQaAudio(null);
     try {
-      // 1) 问答编排：LLM → TTS → LiveTalking（拿回答文本 + 各环节延迟 + 渲染状态）
-      const res = await api.answer(session.id, { question, voice, lang });
+      // LLM 生成回答 → 后端驱动 LiveTalking /human → 数字人开口（音视频经 WebRTC）
+      const res = await api.answer(session.id, { question });
       setQaResult(res);
-      setHistory((h) => [
-        { question: res.question, answer: res.answer, llmMs: res.llm_latency_ms, ttsMs: res.tts_latency_ms, model: res.model_id },
-        ...h,
-      ].slice(0, 20));
-      // 2) 合成音频以便在浏览器试听（/answer 内部已合成，这里再取一次可播放 mp3）
-      if (res.answer) {
-        try {
-          const a = await api.synthesize({ text: res.answer, lang, voice });
-          setQaAudio({ url: a.url, ms: a.latencyMs });
-        } catch {
-          /* 音频可选，失败不阻塞 */
-        }
-      }
+      setHistory((h) =>
+        [
+          { question: res.question, answer: res.answer, llmMs: res.llm_latency_ms, model: res.model_id },
+          ...h,
+        ].slice(0, 20),
+      );
     } catch (e) {
       setQaErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -131,7 +182,9 @@ export function LiveConsole() {
     return Math.round(history.reduce((s, x) => s + x.llmMs, 0) / history.length);
   }, [history]);
 
-  const degraded = !ready || ready.livetalking_enabled; // 本地无 GPU 时必为降级，按 livetalking 不可用展示
+  const avatarConnected = avatarState === 'connected';
+  const avatarConnecting = avatarState === 'connecting';
+  const canSpeak = !!session && avatarConnected;
 
   return (
     <div className="liveConsole">
@@ -147,14 +200,29 @@ export function LiveConsole() {
           </div>
         </div>
         <div className="liveLights">
-          <StatusLight label="TTS 合成" ok={!!ready?.azure_configured} hint="Azure TTS" />
-          <StatusLight label={`LLM ${ready?.llm_default_model_id || ''}`.trim()} ok={!!ready?.llm_configured} hint="LiteLLM 网关" />
-          <StatusLight label="数字人渲染" ok={false} warn hint="需 GPU 节点(LiveTalking),当前降级" />
+          <StatusLight label="TTS 合成" ok={!!ready?.azure_configured} hint="Azure TTS（独立试听）" />
+          <StatusLight
+            label={`LLM ${ready?.llm_default_model_id || ''}`.trim()}
+            ok={!!ready?.llm_configured}
+            hint="LiteLLM 网关"
+          />
+          <StatusLight
+            label="数字人渲染"
+            ok={avatarConnected}
+            warn={!avatarConnected && ltReachable !== false}
+            hint={
+              avatarConnected
+                ? 'LiveTalking WebRTC 已连接'
+                : ltReachable === false
+                  ? 'LiveTalking(8028) 不可达，请先部署'
+                  : '点击下方「连接数字人」'
+            }
+          />
         </div>
       </div>
 
       <div className="liveGrid">
-        {/* 左：预览 + 播报 */}
+        {/* 左：数字人预览 + 播报 */}
         <section className="livePanel">
           <header className="livePanelHead">
             <Volume2 size={16} />
@@ -162,17 +230,56 @@ export function LiveConsole() {
           </header>
 
           <div className="liveStage">
-            <div className="liveAvatarHalo" />
-            <div className="liveAvatarFigure">
-              <div className="liveAvatarHead" />
-              <div className="liveAvatarBody" />
-            </div>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                objectPosition: 'center',
+                background: '#070a0e',
+                borderRadius: '20px',
+                visibility: avatarConnected ? 'visible' : 'hidden',
+                zIndex: 1,
+              }}
+            />
+            {!avatarConnected && (
+              <button
+                className="primaryCta"
+                onClick={connectAvatar}
+                disabled={avatarConnecting || ltReachable === false}
+                style={{ zIndex: 2 }}
+              >
+                {avatarConnecting ? <Loader2 size={16} className="spin" /> : <Video size={16} />}
+                {avatarConnecting
+                  ? '连接中…'
+                  : avatarState === 'failed'
+                    ? '重连数字人'
+                    : '▶ 连接数字人'}
+              </button>
+            )}
             <div className="liveStageCaption">
-              {qaBusy ? 'AI 正在思考…' : broadcastBusy ? '正在合成语音…' : '等待播报'}
+              {avatarConnected
+                ? '数字人已连接 · 实时画面'
+                : avatarConnecting
+                  ? '正在建立 WebRTC…'
+                  : avatarState === 'failed'
+                    ? '连接失败'
+                    : '点击连接拉取画面'}
             </div>
-            <div className="liveStageNote">
-              数字人画面渲染需 GPU 节点(LiveTalking)。当前可测：TTS 合成、LLM 问答，音频可直接试听。
-            </div>
+            {(!avatarConnected || avatarErr) && (
+              <div className="liveStageNote">
+                画面由 GPU 节点 LiveTalking(musetalk) 实时渲染、经 WebRTC 直传浏览器，开口语音也走同一条流。
+                {ltReachable === false
+                  ? ' ⚠ 探测不到 LiveTalking(8028)，请先在 GPU 机部署。'
+                  : ` 信令地址 ${LIVETALKING_URL}`}
+                {avatarErr && <span style={{ color: '#ff5c5c' }}> · {avatarErr}</span>}
+              </div>
+            )}
           </div>
 
           <div className="liveField">
@@ -184,29 +291,23 @@ export function LiveConsole() {
               placeholder="输入要让数字人说的话"
             />
             <div className="liveControls">
-              <select value={lang} onChange={(e) => onLangChange(e.target.value)}>
-                <option value="zh">中文</option>
-                <option value="en">英语</option>
-                <option value="yue">粤语</option>
-                <option value="ja">日语</option>
-              </select>
-              <select value={voice} onChange={(e) => setVoice(e.target.value)}>
-                {voices.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-              <button className="primaryCta" onClick={doBroadcast} disabled={broadcastBusy || !broadcastText.trim()}>
+              <button
+                className="primaryCta"
+                onClick={doBroadcast}
+                disabled={broadcastBusy || !broadcastText.trim() || !session}
+                title={canSpeak ? '' : '请先连接数字人'}
+              >
                 {broadcastBusy ? <Loader2 size={16} className="spin" /> : <Volume2 size={16} />}
-                播报
+                让数字人说
               </button>
             </div>
-            {broadcastAudio && (
+            {broadcastInfo && (
               <div className="liveAudioRow">
-                <audio controls autoPlay src={broadcastAudio.url} />
-                <span className="latencyChip">TTS {broadcastAudio.ms} ms</span>
+                <span className="latencyChip">{broadcastInfo}</span>
               </div>
+            )}
+            {!canSpeak && broadcastText.trim() && !broadcastBusy && (
+              <div className="liveErr">提示：先点上方「连接数字人」拉起画面，再播报。</div>
             )}
             {broadcastErr && <div className="liveErr">{broadcastErr}</div>}
           </div>
@@ -225,10 +326,14 @@ export function LiveConsole() {
               rows={3}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="观众提问，AI 会用数字人主播口吻回答"
+              placeholder="观众提问，AI 会用数字人主播口吻回答并开口播报"
             />
             <div className="liveControls">
-              <button className="primaryCta" onClick={doAsk} disabled={qaBusy || !question.trim() || !session}>
+              <button
+                className="primaryCta"
+                onClick={doAsk}
+                disabled={qaBusy || !question.trim() || !session}
+              >
                 {qaBusy ? <Loader2 size={16} className="spin" /> : <Send size={16} />}
                 提问（GPT 回答）
               </button>
@@ -243,20 +348,13 @@ export function LiveConsole() {
               <p className="qaAnswer">{qaResult.answer}</p>
               <div className="qaMetrics">
                 <span>LLM {qaResult.llm_latency_ms} ms</span>
-                {qaResult.tts_latency_ms != null && <span>TTS {qaResult.tts_latency_ms} ms</span>}
                 <span>{qaResult.model_id}</span>
                 {qaResult.livetalking && (
                   <span className={qaResult.livetalking.degraded ? 'warn' : 'good'}>
-                    数字人 {qaResult.livetalking.degraded ? '降级(无GPU)' : '已驱动'}
+                    数字人 {qaResult.livetalking.degraded ? '未驱动' : '已开口'}
                   </span>
                 )}
               </div>
-              {qaAudio && (
-                <div className="liveAudioRow">
-                  <audio controls autoPlay src={qaAudio.url} />
-                  <span className="latencyChip">TTS {qaAudio.ms} ms</span>
-                </div>
-              )}
             </div>
           )}
           {qaErr && <div className="liveErr">{qaErr}</div>}
@@ -272,7 +370,7 @@ export function LiveConsole() {
                     <div className="qaHistQ">{it.question}</div>
                     <div className="qaHistA">{it.answer}</div>
                     <div className="qaHistMeta">
-                      LLM {it.llmMs}ms{it.ttsMs != null ? ` · TTS ${it.ttsMs}ms` : ''} · {it.model}
+                      LLM {it.llmMs}ms · {it.model}
                     </div>
                   </li>
                 ))}
@@ -297,8 +395,10 @@ export function LiveConsole() {
           <strong>{ready?.llm_default_model_id || '—'}</strong>
         </div>
         <div>
-          <span>后端地址</span>
-          <strong className="mono">:8000</strong>
+          <span>数字人</span>
+          <strong className="mono">
+            {avatarConnected ? '已连接' : avatarConnecting ? '连接中' : '未连接'}
+          </strong>
         </div>
       </div>
     </div>

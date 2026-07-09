@@ -23,8 +23,6 @@ class SayRequest(BaseModel):
 class SayResponse(BaseModel):
     session_id: str
     text: str
-    tts_latency_ms: int
-    audio_bytes: int
     livetalking: dict
 
 
@@ -36,7 +34,7 @@ class AnswerRequest(BaseModel):
     lang: str = "zh"
     voice: str | None = None
     max_tokens: int | None = Field(None, ge=1, le=32768)
-    speak: bool = Field(True, description="是否把答案交给 TTS+LiveTalking 播报")
+    speak: bool = Field(True, description="是否把答案交给 LiveTalking 驱动数字人开口")
 
 
 class AnswerResponse(BaseModel):
@@ -45,6 +43,4 @@ class AnswerResponse(BaseModel):
     answer: str
     model_id: str
     llm_latency_ms: int
-    tts_latency_ms: int | None
-    audio_bytes: int | None
     livetalking: dict | None

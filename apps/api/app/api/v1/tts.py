@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException, Query
@@ -34,8 +35,10 @@ async def synthesize_tts(req: TTSRequest) -> Response:
         raise HTTPException(status_code=400, detail=f"语言 {req.lang} 无可用音色")
 
     start = time.perf_counter()
-    audio, err = synthesize(
-        req.text, req.lang, voice, req.rate_pct, req.pitch_pct, req.volume
+    # synthesize 用 requests 同步阻塞，丢线程池避免卡事件循环
+    audio, err = await asyncio.to_thread(
+        synthesize,
+        req.text, req.lang, voice, req.rate_pct, req.pitch_pct, req.volume,
     )
     latency_ms = int((time.perf_counter() - start) * 1000)
     if err:

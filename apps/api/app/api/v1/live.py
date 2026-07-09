@@ -1,14 +1,15 @@
-"""直播 Session 路由：创建 / 查询 / 播报（TTS + LiveTalking 编排）。
+"""直播 Session 路由：创建 / 查询 / 播报（LLM + LiveTalking 编排）。
 
-/say 编排：
-  1. 校验 session 与文本
-  2. 计时调用 Azure TTS → 拿到 mp3（记录 tts_latency_ms）
-  3. 调用 LiveTalking /human（本机不可达时优雅降级，不抛异常）
-  4. 返回 SayResponse（含延迟指标与 LiveTalking 状态）
+/say 编排：直接驱动 LiveTalking /human（它自己做 azure TTS + 口型渲染，音视频经 WebRTC 回浏览器）。
+/answer 编排：问题 → LLM(数字人主播 persona) → LiveTalking /human 开口。
+
+不再在 speak 路径上做后端 Azure TTS：旧实现合成后丢弃音频（LiveTalking 会自己 TTS），
+既浪费配额又让 tts_latency_ms 指标失真。后端 TTS 仅保留在 /api/v1/tts/synthesize（独立试听）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -26,8 +27,6 @@ from ...services.live.sessions import session_store
 from ...services.livetalking.client import livetalking_client
 from ...services.llm import DEFAULT_PERSONA_SYSTEM_PROMPT
 from ...services.llm.chat import complete_litellm_chat
-from ...services.tts import config as tts_config
-from ...services.tts.azure import synthesize
 
 router = APIRouter(prefix="/live/sessions", tags=["live"])
 
@@ -61,28 +60,13 @@ async def say(session_id: str, req: SayRequest) -> SayResponse:
     if not session:
         raise HTTPException(status_code=404, detail="session not found")
 
-    lang = req.lang or session.lang
-    voice = req.voice or session.voice or tts_config.default_voice(lang)
-    if not voice:
-        raise HTTPException(status_code=400, detail=f"语言 {lang} 无可用音色")
-
-    # 1) TTS（本地可完整验证：Azure 是云端合成）
-    tts_start = time.perf_counter()
-    audio, tts_err = synthesize(req.text, lang, voice)
-    tts_latency_ms = int((time.perf_counter() - tts_start) * 1000)
-    if tts_err or not audio:
-        logger.error(f"[live] tts failed: session={session_id} err={tts_err}")
-        raise HTTPException(status_code=502, detail=f"tts failed: {tts_err}")
-
-    # 2) 驱动数字人渲染（本机无 GPU 时降级，不影响上面的 TTS）
+    # 驱动数字人渲染：LiveTalking /human 自己做 TTS+口型，音视频经 WebRTC 回浏览器。
     lt_sid = req.livetalking_session_id or session.livetalking_session_id
-    livetalking = await livetalking_client.speak(lt_sid, req.text, voice, req.interrupt)
+    livetalking = await livetalking_client.speak(lt_sid, req.text, req.voice, req.interrupt)
 
     return SayResponse(
         session_id=session_id,
         text=req.text,
-        tts_latency_ms=tts_latency_ms,
-        audio_bytes=len(audio),
         livetalking=livetalking,
     )
 
@@ -109,10 +93,11 @@ async def answer(session_id: str, req: AnswerRequest) -> AnswerResponse:
             + req.context.strip()
         )
 
-    # 1) LLM 生成回答
+    # 1) LLM 生成回答（litellm.completion 是同步阻塞，丢线程池，避免卡事件循环）
     llm_start = time.perf_counter()
     try:
-        result = complete_litellm_chat(
+        result = await asyncio.to_thread(
+            complete_litellm_chat,
             model_id=model_id,
             messages=[{"role": "user", "content": req.question}],
             system_prompt=system_prompt,
@@ -125,26 +110,11 @@ async def answer(session_id: str, req: AnswerRequest) -> AnswerResponse:
     llm_latency_ms = int((time.perf_counter() - llm_start) * 1000)
     answer_text = result["content"]
 
-    # 2) 可选：TTS + LiveTalking 播报
-    tts_latency_ms: int | None = None
-    audio_bytes: int | None = None
+    # 2) 可选：驱动数字人开口（LiveTalking 自己 TTS+渲染，音视频经 WebRTC）
     livetalking: dict | None = None
     if req.speak and answer_text:
-        lang = req.lang or session.lang
-        voice = req.voice or session.voice or tts_config.default_voice(lang)
-        if not voice:
-            raise HTTPException(status_code=400, detail=f"语言 {lang} 无可用音色")
-
-        tts_start = time.perf_counter()
-        audio, tts_err = synthesize(answer_text, lang, voice)
-        tts_latency_ms = int((time.perf_counter() - tts_start) * 1000)
-        if tts_err or not audio:
-            logger.error(f"[live] answer tts failed: session={session_id} err={tts_err}")
-            raise HTTPException(status_code=502, detail=f"tts failed: {tts_err}")
-        audio_bytes = len(audio)
-
         livetalking = await livetalking_client.speak(
-            session.livetalking_session_id, answer_text, voice
+            session.livetalking_session_id, answer_text, req.voice
         )
 
     return AnswerResponse(
@@ -153,7 +123,5 @@ async def answer(session_id: str, req: AnswerRequest) -> AnswerResponse:
         answer=answer_text,
         model_id=result["model_id"],
         llm_latency_ms=llm_latency_ms,
-        tts_latency_ms=tts_latency_ms,
-        audio_bytes=audio_bytes,
         livetalking=livetalking,
     )

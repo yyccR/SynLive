@@ -3,6 +3,13 @@
 // - 单机反代部署：构建时设 NEXT_PUBLIC_API_BASE_URL="" → 同源相对路径（经 Caddy :8018 转发）
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
+// LiveTalking WebRTC 地址：浏览器直连（LiveTalking 侧 aiohttp_cors 已对 8018 放开）。
+// 默认用页面同主机名 + :8028（单机部署时 SynLive 在 :8018、LiveTalking 在 :8028）。
+// 跨机/自定义时用 NEXT_PUBLIC_LIVETALKING_URL 覆盖。
+const LT_HOST = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+export const LIVETALKING_URL =
+  process.env.NEXT_PUBLIC_LIVETALKING_URL ?? `http://${LT_HOST}:8028`;
+
 export interface ReadyInfo {
   status: string;
   azure_configured: boolean;
@@ -32,8 +39,6 @@ export interface SessionInfo {
 export interface SayResult {
   session_id: string;
   text: string;
-  tts_latency_ms: number;
-  audio_bytes: number;
   livetalking: LiveTalkingState;
 }
 
@@ -43,8 +48,6 @@ export interface AnswerResult {
   answer: string;
   model_id: string;
   llm_latency_ms: number;
-  tts_latency_ms: number | null;
-  audio_bytes: number | null;
   livetalking: LiveTalkingState | null;
 }
 
@@ -72,6 +75,30 @@ async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
+}
+
+// LiveTalking WebRTC 信令：POST /offer（浏览器 → LiveTalking 直连，跨源已 CORS 放开）
+export async function offerLiveTalking(
+  sdp: string,
+  type: string,
+): Promise<{ sdp: string; type: string }> {
+  const res = await fetch(`${LIVETALKING_URL}/offer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp, type }),
+  });
+  if (!res.ok) throw new Error(`LiveTalking /offer HTTP ${res.status}`);
+  return (await res.json()) as { sdp: string; type: string };
+}
+
+// 探测 LiveTalking 是否可达（GET / 在该镜像返回 403，<500 即视为在跑）
+export async function pingLiveTalking(): Promise<boolean> {
+  try {
+    const res = await fetch(`${LIVETALKING_URL}/`, { method: 'GET' });
+    return res.status > 0 && res.status < 500;
+  } catch {
+    return false;
+  }
 }
 
 export const api = {

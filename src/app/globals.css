@@ -2505,7 +2505,11 @@ select {
 .liveStage {
   position: relative;
   display: grid;
-  min-height: 230px;
+  /* 方形舞台适配 musetalk 450×450 人脸视频，避免 cover 裁掉额头/下巴 */
+  aspect-ratio: 1 / 1;
+  min-height: 260px;
+  max-height: 540px;
+  width: 100%;
   place-items: center;
   overflow: hidden;
   border: 1px solid rgba(246, 241, 232, 0.1);
@@ -2557,7 +2561,9 @@ select {
 
 .liveStageCaption {
   position: absolute;
-  bottom: 44px;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
   padding: 7px 14px;
   border: 1px solid rgba(246, 241, 232, 0.16);
   border-radius: 999px;
@@ -2566,6 +2572,7 @@ select {
   backdrop-filter: blur(10px);
   font-size: 12px;
   font-weight: 800;
+  z-index: 3;
 }
 
 .liveStageNote {
