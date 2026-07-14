@@ -21,3 +21,7 @@ output/
 # 本地缓存 / 训练产物，不入库
 .pnpm-store/
 .train-data/
+
+# TalkingHead 形象 GLB 体积大（单个 5–14MB），不入库；
+# 本机跑 /app/avatar-web 前需自行下载到 public/vendor/talkinghead/avatars/（见该目录 README）
+public/vendor/talkinghead/avatars/*.glb

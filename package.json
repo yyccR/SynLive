@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@epicgames-ps/lib-pixelstreamingfrontend-ue5.5": "latest",
     "@next/third-parties": "latest",
     "lucide-react": "latest",
     "next": "latest",
@@ -20,7 +21,7 @@
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "typescript": "latest"
+    "typescript": "^5.9.3"
   },
   "packageManager": "pnpm@11.7.0"
 }

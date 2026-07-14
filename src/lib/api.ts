@@ -10,6 +10,17 @@ const LT_HOST = typeof window !== 'undefined' ? window.location.hostname : 'loca
 export const LIVETALKING_URL =
   process.env.NEXT_PUBLIC_LIVETALKING_URL ?? `http://${LT_HOST}:8028`;
 
+// UE5 Pixel Streaming 信令地址（浏览器直连 UE SignalingServer）。
+// 单机部署时 SynLive 在 :8018、UE SignalingServer 在 :8888；跨机用 NEXT_PUBLIC_PIXELSTREAMING_URL 覆盖。
+// 切回 LiveTalking 时前端走 LIVETALKING_URL 的 /offer，本变量不用。
+export const PIXELSTREAMING_URL =
+  process.env.NEXT_PUBLIC_PIXELSTREAMING_URL ?? `ws://${LT_HOST}:8888`;
+
+// 当前渲染后端（与后端 /health/ready 的 renderer_backend 对齐）。
+// 'unreal' = UE5 MetaHuman(走 PIXELSTREAMING_URL 信令)；'livetalking' = 2D(走 LIVETALKING_URL /offer)。
+export const RENDERER_BACKEND =
+  process.env.NEXT_PUBLIC_RENDERER_BACKEND ?? 'unreal';
+
 export interface ReadyInfo {
   status: string;
   azure_configured: boolean;
@@ -57,6 +68,7 @@ export interface LiveTalkingState {
   latency_ms: number;
   url: string;
   detail: string;
+  audio?: string; // verbatim 后端合成的 Azure TTS 音频（mp3 base64），前端经 datachannel 发 UE
 }
 
 async function jfetch<T>(path: string, init?: RequestInit): Promise<T> {

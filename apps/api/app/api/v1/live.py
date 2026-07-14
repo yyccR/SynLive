@@ -24,7 +24,7 @@ from ...schemas.live import (
     SessionCreateRequest,
 )
 from ...services.live.sessions import session_store
-from ...services.livetalking.client import livetalking_client
+from ...services.renderer import renderer_client
 from ...services.llm import DEFAULT_PERSONA_SYSTEM_PROMPT
 from ...services.llm.chat import complete_litellm_chat
 
@@ -60,9 +60,10 @@ async def say(session_id: str, req: SayRequest) -> SayResponse:
     if not session:
         raise HTTPException(status_code=404, detail="session not found")
 
-    # 驱动数字人渲染：LiveTalking /human 自己做 TTS+口型，音视频经 WebRTC 回浏览器。
+    # 驱动数字人渲染：渲染后端（默认 UE5 MetaHuman，可切回 LiveTalking）。
+    # 返回结构 {ok, degraded, latency_ms, url, detail} 前端 LiveTalkingState 零改动。
     lt_sid = req.livetalking_session_id or session.livetalking_session_id
-    livetalking = await livetalking_client.speak(lt_sid, req.text, req.voice, req.interrupt)
+    livetalking = await renderer_client.speak(lt_sid, req.text, req.voice, req.interrupt)
 
     return SayResponse(
         session_id=session_id,
@@ -110,10 +111,10 @@ async def answer(session_id: str, req: AnswerRequest) -> AnswerResponse:
     llm_latency_ms = int((time.perf_counter() - llm_start) * 1000)
     answer_text = result["content"]
 
-    # 2) 可选：驱动数字人开口（LiveTalking 自己 TTS+渲染，音视频经 WebRTC）
+    # 2) 可选：驱动数字人开口（渲染后端驱动 MetaHuman，音视频经 Pixel Streaming/WebRTC）
     livetalking: dict | None = None
     if req.speak and answer_text:
-        livetalking = await livetalking_client.speak(
+        livetalking = await renderer_client.speak(
             session.livetalking_session_id, answer_text, req.voice
         )
 

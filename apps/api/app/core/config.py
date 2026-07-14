@@ -30,7 +30,17 @@ class Settings(BaseSettings):
     azure_service_key: str = ""
     azure_service_region: str = "eastasia"
 
-    # --- LiveTalking ---
+    # --- 渲染后端（数字人驱动，可切换） ---
+    # unreal     : UE5 + MetaHuman + Pixel Streaming（默认，3D 数字人）。
+    #              后端 POST 文本到 UE 工程的 HTTP 接口；驱动由 UE 侧 Convai 完成。
+    # livetalking: 旧 2D talking-head（见下方 LiveTalking 配置），保留作降级 / 对照。
+    renderer_backend: str = "unreal"
+    # UE 工程接收文本的 HTTP 接口（A 线在 UE 侧用 Remote Control / HttpServer / Python bridge 开）。
+    # 留空 → speak() 降级返回，不阻塞主链路，等 UE 工程就绪后再填。
+    ue_render_url: str = ""
+    ue_render_timeout: float = 8.0
+
+    # --- LiveTalking（旧 2D 后端，切回 RENDERER_BACKEND=livetalking 时生效）---
     # 本地（无 GPU）不真正渲染，会优雅降级；GPU 机器上指向 LiveTalking 服务
     livetalking_enabled: bool = True
     livetalking_url: str = "http://livetalking:8010"

@@ -7,6 +7,8 @@ import {
   LIVETALKING_URL,
   offerLiveTalking,
   pingLiveTalking,
+  PIXELSTREAMING_URL,
+  RENDERER_BACKEND,
   type AnswerResult,
   type ReadyInfo,
   type SessionInfo,
@@ -31,8 +33,8 @@ function StatusLight({ label, ok, warn, hint }: { label: string; ok: boolean; wa
   );
 }
 
-// aiortc 不支持 trickle ICE，offer SDP 必须带全候选才能让 LiveTalking 应答后连通。
-// 等 ICE 收集完成，最多等 timeoutMs（无 STUN 时仅 host 候选，通常瞬时完成）。
+// aiortc（LiveTalking 侧）不支持 trickle ICE，offer SDP 必须带全候选才能让其对端连通。
+// 等 ICE 收集完成，最多等 timeoutMs（无 STUN 时仅 host 候选，通常瞬时完成）。仅 livetalking 后端用。
 function waitIceGather(pc: RTCPeerConnection, timeoutMs = 2500): Promise<void> {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === 'complete') return resolve();
@@ -51,16 +53,30 @@ function waitIceGather(pc: RTCPeerConnection, timeoutMs = 2500): Promise<void> {
   });
 }
 
+// 当前是否走 UE5 Pixel Streaming（3D）。false = 旧 LiveTalking 2D 降级路径。
+const IS_UNREAL = RENDERER_BACKEND !== 'livetalking';
+
+// PixelStreaming 实例类型用 any 兜底（库类型随 UE 版本变，POC 阶段以运行时验证为准）。
+type PixelStreamingInstance = {
+  videoElementParent?: HTMLElement;
+  disconnect?: () => void;
+  // 经 Pixel Streaming datachannel 把 descriptor 发给 UE（蓝图 OnPixelStreamingInputEvent 接收）
+  emitUIInteraction?: (descriptor: object | string) => void;
+  addEventListener: (type: string, listener: (data?: unknown) => void) => void;
+};
+
 export function LiveConsole() {
   const [ready, setReady] = useState<ReadyInfo | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
 
-  // 数字人 WebRTC 连接
+  // 数字人画面连接
   const [avatarState, setAvatarState] = useState<AvatarState>('idle');
   const [avatarErr, setAvatarErr] = useState('');
-  const [ltReachable, setLtReachable] = useState<boolean | null>(null);
+  const [rendererReachable, setRendererReachable] = useState<boolean | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const psRef = useRef<PixelStreamingInstance | null>(null);
+  const psHostRef = useRef<HTMLDivElement | null>(null);
 
   // 播报（让数字人开口）
   const [broadcastText, setBroadcastText] = useState('欢迎来到直播间，今天为大家介绍我们的新品。');
@@ -94,47 +110,97 @@ export function LiveConsole() {
   useEffect(() => {
     loadReady();
     ensureSession();
-    pingLiveTalking().then(setLtReachable);
+    // LiveTalking 后端才探测可达性（/offer 同源 GET）；UE 后端的信令是 ws，单独的连接按钮会自报状态。
+    if (!IS_UNREAL) pingLiveTalking().then(setRendererReachable);
     return () => {
       pcRef.current?.close();
       pcRef.current = null;
+      psRef.current?.disconnect?.();
+      psRef.current = null;
     };
   }, [loadReady, ensureSession]);
+
+  // —— UE5 Pixel Streaming 连接（默认，3D）——
+  // 库依赖 window/WebSocket，动态 import 规避 Next.js SSR 求值。
+  const connectPixelStreaming = async () => {
+    const { PixelStreaming, Config } = await import(
+      '@epicgames-ps/lib-pixelstreamingfrontend-ue5.5'
+    );
+    psRef.current?.disconnect?.();
+
+    const config = new Config({
+      initialSettings: {
+        AutoConnect: true,
+        AutoPlayVideo: true,
+        StartVideoMuted: false,
+        UseMic: false,
+        MatchViewportRes: true,
+        ss: PIXELSTREAMING_URL, // TextParameters.SignallingServerUrl = 'ss'（库未导出常量，用字面量）
+      },
+    });
+    // PixelStreaming 构造直接传 config（非 {config}）；videoElementParent 让库把 <video> 挂进我们的容器
+    const ps = new PixelStreaming(config, {
+      videoElementParent: psHostRef.current ?? undefined,
+    }) as unknown as PixelStreamingInstance;
+    psRef.current = ps;
+
+    ps.addEventListener('videoInitialized', () => setAvatarState('connected'));
+    ps.addEventListener('webRtcConnected', () => setAvatarState('connected'));
+    ps.addEventListener('webRtcDisconnected', () => setAvatarState('failed'));
+    ps.addEventListener('webRtcFailed', () => setAvatarState('failed'));
+  };
+
+  // —— LiveTalking WebRTC 连接（旧 2D 降级路径）——
+  const connectLiveTalking = async () => {
+    pcRef.current?.close();
+    const pc = new RTCPeerConnection();
+    pcRef.current = pc;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+    pc.ontrack = (e) => {
+      if (videoRef.current) {
+        videoRef.current.srcObject = e.streams[0];
+        videoRef.current.play().catch(() => {});
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      const s = pc.iceConnectionState;
+      if (s === 'connected' || s === 'completed') setAvatarState('connected');
+      else if (s === 'failed') setAvatarState('failed');
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitIceGather(pc);
+    const local = pc.localDescription;
+    if (!local?.sdp) throw new Error('无法生成 WebRTC offer SDP');
+    const ans = await offerLiveTalking(local.sdp, local.type);
+    await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type as RTCSdpType });
+  };
 
   const connectAvatar = async () => {
     if (avatarState === 'connecting' || avatarState === 'connected') return;
     setAvatarState('connecting');
     setAvatarErr('');
     try {
-      pcRef.current?.close();
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
-      pc.addTransceiver('video', { direction: 'recvonly' });
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-      pc.ontrack = (e) => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = e.streams[0];
-          // 连接由用户点击触发，已具备播放权限；音频经同一条 WebRTC 流回传
-          videoRef.current.play().catch(() => {});
-        }
-      };
-      pc.oniceconnectionstatechange = () => {
-        const s = pc.iceConnectionState;
-        if (s === 'connected' || s === 'completed') setAvatarState('connected');
-        else if (s === 'failed') setAvatarState('failed');
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitIceGather(pc); // 收集全候选，写进 offer
-      const local = pc.localDescription;
-      if (!local?.sdp) throw new Error('无法生成 WebRTC offer SDP');
-      const ans = await offerLiveTalking(local.sdp, local.type);
-      await pc.setRemoteDescription({ sdp: ans.sdp, type: ans.type as RTCSdpType });
+      if (IS_UNREAL) {
+        await connectPixelStreaming();
+      } else {
+        await connectLiveTalking();
+      }
     } catch (e) {
       setAvatarState('failed');
       setAvatarErr(e instanceof Error ? e.message : String(e));
     }
+  };
+
+  // 经 Pixel Streaming datachannel 把音频/文本发给 UE（蓝图 OnPixelStreamingInputEvent）
+  // verbatim：优先发 Azure 合成的音频（{type:'SayAudio', audio, text}）；无音频时兜底发文本
+  const driveAvatar = (text: string, audio?: string) => {
+    if (!IS_UNREAL) return;
+    psRef.current?.emitUIInteraction?.(
+      audio ? { type: 'SayAudio', audio, text } : { type: 'SayText', text },
+    );
   };
 
   const doBroadcast = async () => {
@@ -145,6 +211,8 @@ export function LiveConsole() {
     try {
       const r = await api.say(session.id, { text: broadcastText });
       const lt = r.livetalking;
+      // 后端编排完成 → 前端经 datachannel 把 Azure 音频发给 UE 驱动 MetaHuman
+      if (!lt.degraded) driveAvatar(broadcastText, lt.audio);
       setBroadcastInfo(
         lt.degraded ? `数字人未驱动：${lt.detail}` : `已发送给数字人 · ${lt.latency_ms}ms`,
       );
@@ -161,8 +229,10 @@ export function LiveConsole() {
     setQaErr('');
     setQaResult(null);
     try {
-      // LLM 生成回答 → 后端驱动 LiveTalking /human → 数字人开口（音视频经 WebRTC）
+      // LLM 生成回答 → 后端驱动渲染后端 → 数字人开口（音视频经 Pixel Streaming/WebRTC）
       const res = await api.answer(session.id, { question });
+      // LLM 生成完 → 前端经 datachannel 把 Azure 音频发给 UE 驱动 MetaHuman 开口
+      if (res.livetalking && !res.livetalking.degraded) driveAvatar(res.answer, res.livetalking.audio);
       setQaResult(res);
       setHistory((h) =>
         [
@@ -185,6 +255,10 @@ export function LiveConsole() {
   const avatarConnected = avatarState === 'connected';
   const avatarConnecting = avatarState === 'connecting';
   const canSpeak = !!session && avatarConnected;
+
+  // 画面可见性：unreal 后端显示 PixelStreaming 容器，livetalking 后端显示 <video>
+  const showPsHost = IS_UNREAL;
+  const showVideo = !IS_UNREAL && avatarConnected;
 
   return (
     <div className="liveConsole">
@@ -209,13 +283,17 @@ export function LiveConsole() {
           <StatusLight
             label="数字人渲染"
             ok={avatarConnected}
-            warn={!avatarConnected && ltReachable !== false}
+            warn={!avatarConnected && IS_UNREAL}
             hint={
               avatarConnected
-                ? 'LiveTalking WebRTC 已连接'
-                : ltReachable === false
-                  ? 'LiveTalking(8028) 不可达，请先部署'
-                  : '点击下方「连接数字人」'
+                ? IS_UNREAL
+                  ? 'UE5 MetaHuman · Pixel Streaming 已连接'
+                  : 'LiveTalking WebRTC 已连接'
+                : IS_UNREAL
+                  ? '点击下方「连接数字人」连 UE SignalingServer'
+                  : rendererReachable === false
+                    ? 'LiveTalking(8028) 不可达，请先部署'
+                    : '点击下方「连接数字人」'
             }
           />
         </div>
@@ -230,6 +308,21 @@ export function LiveConsole() {
           </header>
 
           <div className="liveStage">
+            {/* UE5 Pixel Streaming：库生成的 video 元素挂到这里 */}
+            <div
+              ref={psHostRef}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                borderRadius: '20px',
+                overflow: 'hidden',
+                visibility: showPsHost && avatarConnected ? 'visible' : 'hidden',
+                zIndex: 1,
+              }}
+            />
+            {/* LiveTalking（2D 降级）：<video> */}
             <video
               ref={videoRef}
               autoPlay
@@ -243,7 +336,7 @@ export function LiveConsole() {
                 objectPosition: 'center',
                 background: '#070a0e',
                 borderRadius: '20px',
-                visibility: avatarConnected ? 'visible' : 'hidden',
+                visibility: showVideo ? 'visible' : 'hidden',
                 zIndex: 1,
               }}
             />
@@ -251,7 +344,7 @@ export function LiveConsole() {
               <button
                 className="primaryCta"
                 onClick={connectAvatar}
-                disabled={avatarConnecting || ltReachable === false}
+                disabled={avatarConnecting || (!IS_UNREAL && rendererReachable === false)}
                 style={{ zIndex: 2 }}
               >
                 {avatarConnecting ? <Loader2 size={16} className="spin" /> : <Video size={16} />}
@@ -264,19 +357,27 @@ export function LiveConsole() {
             )}
             <div className="liveStageCaption">
               {avatarConnected
-                ? '数字人已连接 · 实时画面'
+                ? IS_UNREAL
+                  ? 'UE5 MetaHuman 已连接 · 实时画面'
+                  : '数字人已连接 · 实时画面'
                 : avatarConnecting
-                  ? '正在建立 WebRTC…'
+                  ? IS_UNREAL
+                    ? '正在连接 UE SignalingServer…'
+                    : '正在建立 WebRTC…'
                   : avatarState === 'failed'
                     ? '连接失败'
                     : '点击连接拉取画面'}
             </div>
             {(!avatarConnected || avatarErr) && (
               <div className="liveStageNote">
-                画面由 GPU 节点 LiveTalking(musetalk) 实时渲染、经 WebRTC 直传浏览器，开口语音也走同一条流。
-                {ltReachable === false
-                  ? ' ⚠ 探测不到 LiveTalking(8028)，请先在 GPU 机部署。'
-                  : ` 信令地址 ${LIVETALKING_URL}`}
+                {IS_UNREAL
+                  ? '画面由 UE5 MetaHuman 实时渲染、经 Pixel Streaming(WebRTC) 直传浏览器；语音经同一条流回传。'
+                  : '画面由 GPU 节点 LiveTalking(musetalk) 实时渲染、经 WebRTC 直传浏览器，开口语音也走同一条流。'}
+                {IS_UNREAL
+                  ? ` 信令地址 ${PIXELSTREAMING_URL}`
+                  : rendererReachable === false
+                    ? ' ⚠ 探测不到 LiveTalking(8028)，请先在 GPU 机部署。'
+                    : ` 信令地址 ${LIVETALKING_URL}`}
                 {avatarErr && <span style={{ color: '#ff5c5c' }}> · {avatarErr}</span>}
               </div>
             )}
